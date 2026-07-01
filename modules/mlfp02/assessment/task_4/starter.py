@@ -4,10 +4,6 @@
 MLFP02 — Assessment Task 4: Feature Engineering & Feature Store
 
 Complete the `solve()` function. Read problem.md for the full specification.
-You join five raw ICU tables into one admission-level feature table. The event
-tables are messy: lab values contain junk strings, doses are like "34.8MG", and
-many admissions have no vitals/labs at all. Your output is auto-graded
-column-by-column against an independent re-derivation.
 
     python grader.py starter.py
 """
@@ -43,22 +39,41 @@ FEATURE_COLUMNS = [
 
 
 def solve() -> pl.DataFrame:
-    """Build the 19-column admission-level feature-store table.
+    """Build the 19-column admission-level feature-store table."""
 
-    See problem.md for the exact columns, aggregations, parsing rules, and the
-    imputation policy. Return the table sorted ascending by admission_id.
-    """
     loader = MLFPDataLoader()
-    adm = loader.load("mlfp02", "icu_admissions.parquet")
-    pat = loader.load("mlfp02", "icu_patients.parquet")
-    vit = loader.load("mlfp02", "icu_vitals.parquet")
-    labs = loader.load("mlfp02", "icu_labs.parquet")
-    meds = loader.load("mlfp02", "icu_medications.parquet")
 
-    # TODO 1: Base = admissions with admission_id, patient_id, diagnosis,
-    #         icu_type, los_days, and feature_timestamp = admit_time parsed to
-    #         Datetime (format DT_FMT). Left-join patient age, gender, bmi on
-    #         patient_id.
+    adm = loader.load(
+        "mlfp02",
+        "icu_admissions.parquet",
+    )
+
+    pat = loader.load(
+        "mlfp02",
+        "icu_patients.parquet",
+    )
+
+    vit = loader.load(
+        "mlfp02",
+        "icu_vitals.parquet",
+    )
+
+    labs = loader.load(
+        "mlfp02",
+        "icu_labs.parquet",
+    )
+
+    meds = loader.load(
+        "mlfp02",
+        "icu_medications.parquet",
+    )
+
+    # ============================================================
+    # TASK 1:
+    # Build the admissions base table.
+    # Parse admit_time into feature_timestamp.
+    # Left-join patient demographics.
+    # ============================================================
     base = (
         adm
         .select(
@@ -67,6 +82,7 @@ def solve() -> pl.DataFrame:
             "diagnosis",
             "icu_type",
             "los_days",
+
             pl.col("admit_time")
             .str.strptime(
                 pl.Datetime,
@@ -87,8 +103,11 @@ def solve() -> pl.DataFrame:
         )
     )
 
-    # TODO 2: Vitals -> group_by admission_id: mean_heart_rate, mean_systolic_bp,
-    #         min_spo2, max_temperature, n_vitals = count of rows.
+    # ============================================================
+    # TASK 2:
+    # Aggregate vitals by admission_id.
+    # Calculate means, minimum, maximum and row count.
+    # ============================================================
     vitals_agg = (
         vit
         .group_by("admission_id")
@@ -115,16 +134,20 @@ def solve() -> pl.DataFrame:
         )
     )
 
-    # TODO 3: Labs -> parse value to Float64 (strict=False so junk like
-    #         "HAEMOLYSED"/"<0.1" becomes null); lowercase flag. group_by
-    #         admission_id: n_labs = row count, n_abnormal_labs = count where
-    #         flag == "abnormal", mean_creatinine = mean parsed value where
-    #         test_name == "Creatinine".
+    # ============================================================
+    # TASK 3:
+    # Parse lab values into Float64.
+    # Junk strings become null because strict=False.
+    # Lowercase the flag and aggregate labs by admission_id.
+    # ============================================================
     labs_parsed = (
         labs
         .with_columns(
             pl.col("value")
-            .cast(pl.Float64, strict=False)
+            .cast(
+                pl.Float64,
+                strict=False,
+            )
             .alias("parsed_value"),
 
             pl.col("flag")
@@ -141,22 +164,29 @@ def solve() -> pl.DataFrame:
             .cast(pl.Int64)
             .alias("n_labs"),
 
-            (pl.col("flag_lower") == "abnormal")
+            (
+                pl.col("flag_lower")
+                == "abnormal"
+            )
             .sum()
             .cast(pl.Int64)
             .alias("n_abnormal_labs"),
 
             pl.col("parsed_value")
-            .filter(pl.col("test_name") == "Creatinine")
+            .filter(
+                pl.col("test_name")
+                == "Creatinine"
+            )
             .mean()
             .alias("mean_creatinine"),
         )
     )
 
-    # TODO 4: Medications -> parse leading numeric of dose via regex
-    #         r"([0-9]+\.?[0-9]*)" -> Float64 mg. group_by admission_id:
-    #         n_distinct_drugs = n_unique(drug_name), n_iv_meds = count where
-    #         route == "IV", total_dose_mg = sum of parsed dose.
+    # ============================================================
+    # TASK 4:
+    # Extract the numeric part of medication dose.
+    # Aggregate medication information by admission_id.
+    # ============================================================
     meds_parsed = (
         meds
         .with_columns(
@@ -165,8 +195,11 @@ def solve() -> pl.DataFrame:
                 r"([0-9]+\.?[0-9]*)",
                 group_index=1,
             )
-            .cast(pl.Float64, strict=False)
-            .alias("dose_mg")
+            .cast(
+                pl.Float64,
+                strict=False,
+            )
+            .alias("dose_mg"),
         )
     )
 
@@ -179,7 +212,9 @@ def solve() -> pl.DataFrame:
             .cast(pl.Int64)
             .alias("n_distinct_drugs"),
 
-            (pl.col("route") == "IV")
+            (
+                pl.col("route") == "IV"
+            )
             .sum()
             .cast(pl.Int64)
             .alias("n_iv_meds"),
@@ -190,7 +225,10 @@ def solve() -> pl.DataFrame:
         )
     )
 
-    # TODO 5: Left-join all three aggregate blocks onto the base.
+    # ============================================================
+    # TASK 5:
+    # Left-join all aggregated feature tables onto the base table.
+    # ============================================================
     result = (
         base
         .join(
@@ -210,14 +248,11 @@ def solve() -> pl.DataFrame:
         )
     )
 
-    # TODO 6: Imputation policy:
-    #           - gender null -> "Unknown"
-    #           - total_dose_mg null -> 0.0
-    #           - n_vitals/n_labs/n_abnormal_labs/n_distinct_drugs/n_iv_meds
-    #             null -> 0 (cast to Int64)
-    #           - age, bmi, mean_heart_rate, mean_systolic_bp, min_spo2,
-    #             max_temperature, mean_creatinine null -> that column's MEDIAN
-    #             (computed before filling; cast to Float64)
+    # ============================================================
+    # TASK 6:
+    # Apply the required imputation rules.
+    # Calculate all medians before filling any null values.
+    # ============================================================
     count_columns = [
         "n_vitals",
         "n_labs",
@@ -236,8 +271,7 @@ def solve() -> pl.DataFrame:
         "mean_creatinine",
     ]
 
-    # Compute all medians before filling the missing values.
-    medians = (
+    median_values = (
         result
         .select(
             [
@@ -248,19 +282,25 @@ def solve() -> pl.DataFrame:
                 for column in median_columns
             ]
         )
-        .row(0, named=True)
+        .row(
+            0,
+            named=True,
+        )
     )
 
     result = result.with_columns(
+        # Fill missing gender.
         pl.col("gender")
         .fill_null("Unknown")
         .alias("gender"),
 
+        # Fill missing total dose with 0.0.
         pl.col("total_dose_mg")
         .cast(pl.Float64)
         .fill_null(0.0)
         .alias("total_dose_mg"),
 
+        # Fill missing count columns with 0.
         *[
             pl.col(column)
             .fill_null(0)
@@ -269,16 +309,23 @@ def solve() -> pl.DataFrame:
             for column in count_columns
         ],
 
+        # Fill numeric measurement columns using their medians.
         *[
             pl.col(column)
             .cast(pl.Float64)
-            .fill_null(float(medians[column]))
+            .fill_null(
+                float(median_values[column])
+            )
             .alias(column)
             for column in median_columns
         ],
     )
 
-    # TODO 7: select FEATURE_COLUMNS in order, sort by admission_id.
+    # ============================================================
+    # TASK 7:
+    # Select the exact 19 required columns in the correct order.
+    # Sort the result by admission_id.
+    # ============================================================
     result = (
         result
         .select(FEATURE_COLUMNS)

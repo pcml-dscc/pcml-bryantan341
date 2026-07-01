@@ -4,9 +4,6 @@
 MLFP02 — Assessment Task 2: Hypothesis Testing, Bootstrap & CUPED
 
 Complete the `solve()` function. Read problem.md for the full specification.
-The bootstrap is auto-graded against a bit-reproducible reference: you MUST
-follow the seed / resample protocol exactly (treatment resampled before
-control, every iteration).
 
     python grader.py starter.py
 """
@@ -20,29 +17,34 @@ from shared import MLFPDataLoader
 
 # --- Fixed problem constants (do not change) ---
 COHORT = ["control", "treatment_a"]
-BOOT_SEED = 2024            # np.random.default_rng(BOOT_SEED)
-BOOT_B = 2000               # number of bootstrap resamples
-MT_P_VALUES = [0.03, 0.012, 0.04, 0.65, 0.009]   # five simultaneous tests
+BOOT_SEED = 2024
+BOOT_B = 2000
+MT_P_VALUES = [0.03, 0.012, 0.04, 0.65, 0.009]
 MT_ALPHA = 0.05
 
 
 def solve() -> dict:
-    """Return the hypothesis-testing / bootstrap / CUPED answer dict.
+    """Return the hypothesis-testing / bootstrap / CUPED answer dict."""
 
-    See problem.md for the exact 13 keys and how each is defined.
-    """
     loader = MLFPDataLoader()
     df = loader.load("mlfp02", "experiment_data.parquet")
-    co = df.filter(pl.col("experiment_group").is_in(COHORT))
 
-    # TODO 1: Extract metric_value for treatment_a (`t`) and control (`c`) as
-    #         float numpy arrays, in file order. Welch two-sample t-test:
-    #         welch_t, welch_p = stats.ttest_ind(t, c, equal_var=False).
-    #         mean_diff = t.mean() - c.mean().
+    # Keep only control and treatment_a.
+    co = df.filter(
+        pl.col("experiment_group").is_in(COHORT)
+    )
+
+    # ============================================================
+    # TASK 1:
+    # Extract treatment and control metric_value arrays.
+    # Run the Welch t-test and calculate the mean difference.
+    # ============================================================
     t = (
         co
         .filter(pl.col("experiment_group") == "treatment_a")
-        .select(pl.col("metric_value").cast(pl.Float64))
+        .select(
+            pl.col("metric_value").cast(pl.Float64)
+        )
         .to_series()
         .to_numpy()
     )
@@ -50,7 +52,9 @@ def solve() -> dict:
     c = (
         co
         .filter(pl.col("experiment_group") == "control")
-        .select(pl.col("metric_value").cast(pl.Float64))
+        .select(
+            pl.col("metric_value").cast(pl.Float64)
+        )
         .to_series()
         .to_numpy()
     )
@@ -58,63 +62,82 @@ def solve() -> dict:
     welch_t, welch_p = stats.ttest_ind(
         t,
         c,
-        equal_var=False
+        equal_var=False,
     )
 
-    mean_diff = t.mean() - c.mean()
+    mean_diff = (
+        t.mean()
+        - c.mean()
+    )
 
-    # TODO 2: Seeded percentile bootstrap of mean_diff (EXACT protocol):
-    #             rng = np.random.default_rng(BOOT_SEED)
-    #             for b in range(BOOT_B):
-    #                 bt = rng.choice(t, size=t.size, replace=True)   # treatment FIRST
-    #                 bc = rng.choice(c, size=c.size, replace=True)   # control SECOND
-    #                 diffs[b] = bt.mean() - bc.mean()
-    #             boot_ci_low, boot_ci_high = np.percentile(diffs, [2.5, 97.5])
+    # ============================================================
+    # TASK 2:
+    # Run the exact seeded percentile bootstrap.
+    # Treatment must be sampled first and control second.
+    # ============================================================
     rng = np.random.default_rng(BOOT_SEED)
-    diffs = np.empty(BOOT_B)
+
+    diffs = np.empty(
+        BOOT_B,
+        dtype=float,
+    )
 
     for b in range(BOOT_B):
         bt = rng.choice(
             t,
             size=t.size,
-            replace=True
+            replace=True,
         )
 
         bc = rng.choice(
             c,
             size=c.size,
-            replace=True
+            replace=True,
         )
 
-        diffs[b] = bt.mean() - bc.mean()
+        diffs[b] = (
+            bt.mean()
+            - bc.mean()
+        )
 
     boot_ci_low, boot_ci_high = np.percentile(
         diffs,
-        [2.5, 97.5]
+        [2.5, 97.5],
     )
 
-    # TODO 3: CUPED with pre_metric_value as covariate, over the full cohort:
-    #             theta = np.cov(metric, pre, ddof=1)[0,1] / np.var(pre, ddof=1)
-    #             metric_adj = metric - theta * (pre - pre.mean())
-    #             var_metric = np.var(metric, ddof=1); var_adj = np.var(metric_adj, ddof=1)
-    #             cuped_var_reduction = 1 - var_adj / var_metric
+    # ============================================================
+    # TASK 3:
+    # Calculate CUPED theta and the adjusted metric.
+    # Calculate variance before and after CUPED.
+    # ============================================================
     metric = (
         co
-        .select(pl.col("metric_value").cast(pl.Float64))
+        .select(
+            pl.col("metric_value").cast(pl.Float64)
+        )
         .to_series()
         .to_numpy()
     )
 
     pre = (
         co
-        .select(pl.col("pre_metric_value").cast(pl.Float64))
+        .select(
+            pl.col("pre_metric_value").cast(pl.Float64)
+        )
         .to_series()
         .to_numpy()
     )
 
     cuped_theta = (
-        np.cov(metric, pre, ddof=1)[0, 1]
-        / np.var(pre, ddof=1)
+        np.cov(
+            metric,
+            pre,
+            ddof=1,
+        )[0, 1]
+        / np.var(
+            pre,
+            ddof=1,
+        )
     )
 
     metric_adj = (
@@ -122,16 +145,26 @@ def solve() -> dict:
         - cuped_theta * (pre - pre.mean())
     )
 
-    var_metric = np.var(metric, ddof=1)
-    var_adj = np.var(metric_adj, ddof=1)
+    var_metric = np.var(
+        metric,
+        ddof=1,
+    )
+
+    var_adj = np.var(
+        metric_adj,
+        ddof=1,
+    )
 
     cuped_var_reduction = (
         1.0
         - var_adj / var_metric
     )
 
-    # TODO 4: Re-run the Welch test on metric_adj (treatment vs control) ->
-    #         welch_t_cuped, welch_p_cuped.
+    # ============================================================
+    # TASK 4:
+    # Split the CUPED-adjusted metric by experiment group.
+    # Run another Welch t-test.
+    # ============================================================
     groups = (
         co
         .select("experiment_group")
@@ -139,34 +172,46 @@ def solve() -> dict:
         .to_numpy()
     )
 
-    t_adj = metric_adj[groups == "treatment_a"]
-    c_adj = metric_adj[groups == "control"]
+    t_adj = metric_adj[
+        groups == "treatment_a"
+    ]
+
+    c_adj = metric_adj[
+        groups == "control"
+    ]
 
     welch_t_cuped, welch_p_cuped = stats.ttest_ind(
         t_adj,
         c_adj,
-        equal_var=False
+        equal_var=False,
     )
 
-    # TODO 5: Multiple testing over MT_P_VALUES at MT_ALPHA:
-    #           - Bonferroni: count pv < alpha/m  -> bonferroni_n_sig
-    #           - Benjamini-Hochberg step-up: sort p, threshold_i = alpha*i/m,
-    #             reject all up to the largest i with p_(i) <= threshold_i
-    #             -> bh_n_sig
+    # ============================================================
+    # TASK 5:
+    # Perform Bonferroni and Benjamini-Hochberg corrections.
+    # ============================================================
     p_values = np.asarray(
         MT_P_VALUES,
-        dtype=float
+        dtype=float,
     )
 
     m = p_values.size
 
-    bonferroni_threshold = MT_ALPHA / m
-
-    bonferroni_n_sig = int(
-        np.sum(p_values < bonferroni_threshold)
+    # Bonferroni correction.
+    bonferroni_threshold = (
+        MT_ALPHA / m
     )
 
-    sorted_p_values = np.sort(p_values)
+    bonferroni_n_sig = int(
+        np.sum(
+            p_values < bonferroni_threshold
+        )
+    )
+
+    # Benjamini-Hochberg correction.
+    sorted_p_values = np.sort(
+        p_values
+    )
 
     bh_thresholds = (
         MT_ALPHA
@@ -181,9 +226,14 @@ def solve() -> dict:
     if valid_ranks.size == 0:
         bh_n_sig = 0
     else:
-        bh_n_sig = int(valid_ranks[-1] + 1)
+        bh_n_sig = int(
+            valid_ranks[-1] + 1
+        )
 
-    # TODO 6: Return the dict with all 13 keys (see problem.md).
+    # ============================================================
+    # TASK 6:
+    # Return all 13 required values using the exact key names.
+    # ============================================================
     return {
         "welch_t": float(welch_t),
         "welch_p": float(welch_p),
@@ -193,11 +243,15 @@ def solve() -> dict:
         "cuped_theta": float(cuped_theta),
         "var_metric": float(var_metric),
         "var_adj": float(var_adj),
-        "cuped_var_reduction": float(cuped_var_reduction),
+        "cuped_var_reduction": float(
+            cuped_var_reduction
+        ),
         "welch_t_cuped": float(welch_t_cuped),
         "welch_p_cuped": float(welch_p_cuped),
-        "bonferroni_n_sig": bonferroni_n_sig,
-        "bh_n_sig": bh_n_sig,
+        "bonferroni_n_sig": int(
+            bonferroni_n_sig
+        ),
+        "bh_n_sig": int(bh_n_sig),
     }
 
 

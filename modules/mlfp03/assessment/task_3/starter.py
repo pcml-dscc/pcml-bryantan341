@@ -9,7 +9,7 @@ Train a baseline and a class-balanced RandomForest through the kailash-ml
 the balanced model with `ModelExplainer` (SHAP). Your submission is auto-graded
 against an independent re-derivation.
 
-    python grader.py starter.py     # grade your attempt
+    python grader.py starter.py
 """
 from __future__ import annotations
 
@@ -29,6 +29,7 @@ SEED = 42
 TARGET = "premium_response"
 TOP_K = 6
 SHAP_BACKGROUND = 64
+
 BASE_FEATURES = [
     "satisfaction_score",
     "avg_order_value",
@@ -42,17 +43,39 @@ BASE_FEATURES = [
 
 
 def _model_frame() -> pl.DataFrame:
-    """Load N_ROWS, derive ``premium_response`` (given), return the model frame."""
-    df = MLFPDataLoader().load("mlfp03", "ecommerce_customers.parquet")
-    df = df.sort("customer_id").head(N_ROWS)
+    """Load the data and derive premium_response."""
+
+    df = MLFPDataLoader().load(
+        "mlfp03",
+        "ecommerce_customers.parquet",
+    )
+
+    df = (
+        df
+        .sort("customer_id")
+        .head(N_ROWS)
+    )
+
     rng = np.random.default_rng(SEED)
 
     def z(col: str) -> np.ndarray:
         a = df[col].to_numpy().astype(float)
         return (a - a.mean()) / (a.std() + 1e-9)
 
-    loyal = df["loyalty_member"].cast(pl.Int64).to_numpy().astype(float)
-    sat_high = (df["satisfaction_score"] >= 4).cast(pl.Int64).to_numpy().astype(float)
+    loyal = (
+        df["loyalty_member"]
+        .cast(pl.Int64)
+        .to_numpy()
+        .astype(float)
+    )
+
+    sat_high = (
+        (df["satisfaction_score"] >= 4)
+        .cast(pl.Int64)
+        .to_numpy()
+        .astype(float)
+    )
+
     logit = (
         1.0 * z("satisfaction_score")
         + 0.9 * loyal
@@ -62,68 +85,357 @@ def _model_frame() -> pl.DataFrame:
         + 1.4 * (loyal * sat_high)
         + rng.normal(0.0, 1.3, size=df.height)
     )
+
     df = df.with_columns(
         [
-            pl.col("loyalty_member").cast(pl.Int64).alias("loyalty_int"),
-            pl.Series(TARGET, (logit > 2.0).astype(np.int64)),
-            pl.int_range(0, df.height, dtype=pl.Int64).alias("row_id"),
+            pl.col("loyalty_member")
+            .cast(pl.Int64)
+            .alias("loyalty_int"),
+
+            pl.Series(
+                TARGET,
+                (logit > 2.0).astype(np.int64),
+            ),
+
+            pl.int_range(
+                0,
+                df.height,
+                dtype=pl.Int64,
+            ).alias("row_id"),
         ]
     )
-    return df.select(BASE_FEATURES + ["row_id", TARGET])
+
+    return df.select(
+        BASE_FEATURES
+        + ["row_id", TARGET]
+    )
 
 
-def _holdout_test(frame: pl.DataFrame) -> pl.DataFrame:
-    """Reproduce TrainingPipeline's deterministic holdout split (test portion).
+def _holdout_test(
+    frame: pl.DataFrame,
+) -> pl.DataFrame:
+    """Reproduce TrainingPipeline's test split."""
 
-    Use this same X_test / y_test for km.diagnose so per-class recall lines up
-    with the engine's evaluation. Given to you — do not change.
-    """
     n = frame.height
+
     idx = np.arange(n)
-    np.random.RandomState(42).shuffle(idx)
-    split_idx = int(n * 0.75)
-    return frame[idx[split_idx:].tolist()]
+
+    np.random.RandomState(
+        SEED
+    ).shuffle(idx)
+
+    split_idx = int(
+        n * 0.75
+    )
+
+    return frame[
+        idx[split_idx:].tolist()
+    ]
+
+
+def _minority_recall(
+    report,
+) -> float:
+    """Read positive-class recall safely."""
+
+    if "1.0" in report.per_class:
+        return float(
+            report.per_class["1.0"]["recall"]
+        )
+
+    return float(
+        report.per_class["1"]["recall"]
+    )
 
 
 async def _run() -> dict:
-    # TODO 1: import ConnectionManager, ModelRegistry, TrainingPipeline,
-    #         ModelExplainer, diagnose, EvalSpec, ModelSpec, FeatureField,
-    #         FeatureSchema. Build the frame, schema (entity_id_column="row_id"),
-    #         and EvalSpec(metrics=["accuracy","f1","auc"], holdout, 0.25).
-    #
-    # TODO 2: train TWO RandomForests via TrainingPipeline:
-    #         - baseline: {n_estimators:150, random_state:42, n_jobs:-1}
-    #         - balanced: same + class_weight="balanced"
-    #
-    # TODO 3: load both fitted models from the registry
-    #         (pickle.loads(await registry.load_artifact(name, version))).
-    #
-    # TODO 4: evaluate per-class behaviour with
-    #         diagnose(model, kind="classical_classifier", data=(X_test,y_test),
-    #         show=False). The minority (positive) class is key "1.0":
-    #         report.per_class["1.0"]["recall"]. Macro recall + accuracy live in
-    #         report.metrics ("recall_macro", "accuracy").
-    #
-    # TODO 5: interpret the BALANCED model with ModelExplainer:
-    #         ModelExplainer(model=bal_model,
-    #                        X=frame.select(BASE_FEATURES).head(SHAP_BACKGROUND),
-    #                        feature_names=BASE_FEATURES).explain_global(
-    #                        max_display=TOP_K)["feature_importance"] -> dict
-    #         ordered by importance; take the first TOP_K keys.
-    #
-    # TODO 6: return the dict described in the docstring (remember to close the
-    #         connection in a finally block).
-    return {}
+    """Train, diagnose and explain the two RandomForest models."""
+
+    from kailash.db.connection import ConnectionManager
+    from kailash_ml import diagnose
+    from kailash_ml.engines.model_explainer import ModelExplainer
+    from kailash_ml.engines.model_registry import ModelRegistry
+    from kailash_ml.engines.training_pipeline import (
+        EvalSpec,
+        ModelSpec,
+        TrainingPipeline,
+    )
+    from kailash_ml.types import (
+        FeatureField,
+        FeatureSchema,
+    )
+
+    # ============================================================
+    # TASK 1:
+    # Build the deterministic model frame and feature schema.
+    # ============================================================
+    frame = _model_frame()
+
+    schema = FeatureSchema(
+        name="premium_upsell_imbalance_features",
+        features=[
+            FeatureField(
+                name=feature,
+                dtype="float64",
+                nullable=False,
+            )
+            for feature in BASE_FEATURES
+        ],
+        entity_id_column="row_id",
+    )
+
+    eval_spec = EvalSpec(
+        metrics=[
+            "accuracy",
+            "f1",
+            "auc",
+        ],
+        split_strategy="holdout",
+        test_size=0.25,
+    )
+
+    conn = ConnectionManager(
+        "sqlite:///:memory:"
+    )
+
+    try:
+        await conn.initialize()
+
+        registry = ModelRegistry(conn)
+
+        pipeline = TrainingPipeline(
+            feature_store=None,
+            registry=registry,
+        )
+
+        # ========================================================
+        # TASK 2:
+        # Train the baseline RandomForest.
+        # ========================================================
+        baseline_spec = ModelSpec(
+            model_class=(
+                "sklearn.ensemble."
+                "RandomForestClassifier"
+            ),
+            framework="sklearn",
+            hyperparameters={
+                "n_estimators": 150,
+                "random_state": SEED,
+                "n_jobs": -1,
+            },
+        )
+
+        baseline_result = await pipeline.train(
+            data=frame,
+            schema=schema,
+            model_spec=baseline_spec,
+            eval_spec=eval_spec,
+            experiment_name="premium_rf_baseline",
+        )
+
+        # ========================================================
+        # TASK 3:
+        # Train the balanced RandomForest.
+        # ========================================================
+        balanced_spec = ModelSpec(
+            model_class=(
+                "sklearn.ensemble."
+                "RandomForestClassifier"
+            ),
+            framework="sklearn",
+            hyperparameters={
+                "n_estimators": 150,
+                "random_state": SEED,
+                "n_jobs": -1,
+                "class_weight": "balanced",
+            },
+        )
+
+        balanced_result = await pipeline.train(
+            data=frame,
+            schema=schema,
+            model_spec=balanced_spec,
+            eval_spec=eval_spec,
+            experiment_name="premium_rf_balanced",
+        )
+
+        # ========================================================
+        # TASK 4:
+        # Load both fitted models from the ModelRegistry.
+        # ========================================================
+        baseline_version = (
+            baseline_result.model_version
+        )
+
+        balanced_version = (
+            balanced_result.model_version
+        )
+
+        if baseline_version is None:
+            raise RuntimeError(
+                "Baseline model was not registered."
+            )
+
+        if balanced_version is None:
+            raise RuntimeError(
+                "Balanced model was not registered."
+            )
+
+        baseline_artifact = await registry.load_artifact(
+            baseline_version.name,
+            baseline_version.version,
+        )
+
+        balanced_artifact = await registry.load_artifact(
+            balanced_version.name,
+            balanced_version.version,
+        )
+
+        baseline_model = pickle.loads(
+            baseline_artifact
+        )
+
+        balanced_model = pickle.loads(
+            balanced_artifact
+        )
+
+        # ========================================================
+        # TASK 5:
+        # Reproduce the exact test split and diagnose both models.
+        # ========================================================
+        test = _holdout_test(
+            frame
+        )
+
+        X_test = test.select(
+            BASE_FEATURES
+        )
+
+        # Cast to Float64 so the diagnostic class key is "1.0".
+        y_test = test[TARGET].cast(
+            pl.Float64
+        )
+
+        baseline_report = diagnose(
+            baseline_model,
+            kind="classical_classifier",
+            data=(
+                X_test,
+                y_test,
+            ),
+            show=False,
+        )
+
+        balanced_report = diagnose(
+            balanced_model,
+            kind="classical_classifier",
+            data=(
+                X_test,
+                y_test,
+            ),
+            show=False,
+        )
+
+        baseline_minority_recall = _minority_recall(
+            baseline_report
+        )
+
+        balanced_minority_recall = _minority_recall(
+            balanced_report
+        )
+
+        baseline_recall_macro = float(
+            baseline_report.metrics[
+                "recall_macro"
+            ]
+        )
+
+        balanced_recall_macro = float(
+            balanced_report.metrics[
+                "recall_macro"
+            ]
+        )
+
+        baseline_accuracy = float(
+            baseline_report.metrics[
+                "accuracy"
+            ]
+        )
+
+        balanced_accuracy = float(
+            balanced_report.metrics[
+                "accuracy"
+            ]
+        )
+
+        # ========================================================
+        # TASK 6:
+        # Explain the balanced model using SHAP global importance.
+        # ========================================================
+        background = (
+            frame
+            .select(BASE_FEATURES)
+            .head(SHAP_BACKGROUND)
+        )
+
+        explainer = ModelExplainer(
+            model=balanced_model,
+            X=background,
+            feature_names=BASE_FEATURES,
+        )
+
+        explanation = explainer.explain_global(
+            max_display=TOP_K
+        )
+
+        feature_importance = explanation[
+            "feature_importance"
+        ]
+
+        top_features = list(
+            feature_importance.keys()
+        )[:TOP_K]
+
+        # ========================================================
+        # TASK 7:
+        # Return all required metrics and top features.
+        # ========================================================
+        return {
+            "baseline_minority_recall": float(
+                baseline_minority_recall
+            ),
+            "balanced_minority_recall": float(
+                balanced_minority_recall
+            ),
+            "baseline_recall_macro": float(
+                baseline_recall_macro
+            ),
+            "balanced_recall_macro": float(
+                balanced_recall_macro
+            ),
+            "baseline_accuracy": float(
+                baseline_accuracy
+            ),
+            "balanced_accuracy": float(
+                balanced_accuracy
+            ),
+            "roc_auc": float(
+                balanced_result.metrics["auc"]
+            ),
+            "top_features": top_features,
+            "n_features": len(BASE_FEATURES),
+        }
+
+    finally:
+        await conn.close()
 
 
 def solve() -> dict:
-    """Evaluate imbalance handling + interpret the balanced model.
+    """Run the asynchronous evaluation pipeline."""
 
-    Return a dict with: baseline_minority_recall, balanced_minority_recall,
-    baseline_recall_macro, balanced_recall_macro, baseline_accuracy,
-    balanced_accuracy, roc_auc, top_features (top-6 by SHAP), n_features.
-    """
-    return asyncio.run(_run())
+    return asyncio.run(
+        _run()
+    )
 
 
 if __name__ == "__main__":
