@@ -42,29 +42,56 @@ def make_customers() -> pl.DataFrame:
     spreads = np.array([3.0, 3.0, 120.0, 5.0, 18.0])
     sizes = [320, 300, 280, 300]
     blocks = []
+
     for c, n in zip(centers, sizes):
         blocks.append(c + rng.normal(0, 1, (n, 5)) * spreads)
+
     X = np.vstack(blocks)
     perm = rng.permutation(X.shape[0])
     X = X[perm]
+
     return pl.DataFrame({col: X[:, j] for j, col in enumerate(FEATURES)})
 
 
 def solve() -> dict:
     """Recover the planted personas with the kailash-ml ClusteringEngine."""
+
+    # Task 1: Generate the deterministic customer dataset
     df = make_customers()
 
-    # TODO 1: Standardise every feature to a z-score in Polars
-    #         ((value - mean) / std). This is load-bearing — raw scales differ
-    #         by ~40x and unstandardised distance collapses the recovery.
-    # TODO 2: Create a ClusteringEngine().
-    # TODO 3: Call sweep_k(zdf, range(2, 9), algorithm="kmeans",
-    #         criterion="silhouette") and read `optimal_k` (do NOT hardcode K).
-    # TODO 4: fit(zdf, algorithm="kmeans", n_clusters=optimal_k); read `labels`
-    #         and `silhouette_score` off the ClusterResult.
-    # TODO 5: Return {"labels": [...], "n_clusters": int, "silhouette": float}.
+    # Task 2: Standardise every feature to a z-score using Polars
+    zdf = df.select(
+        [
+            ((pl.col(col) - pl.col(col).mean()) / pl.col(col).std()).alias(col)
+            for col in FEATURES
+        ]
+    )
 
-    return {"labels": [0] * df.height, "n_clusters": 1, "silhouette": 0.0}
+    # Task 3: Create a ClusteringEngine and determine the optimal K
+    engine = ClusteringEngine()
+
+    sweep_result = engine.sweep_k(
+        zdf,
+        range(2, 9),
+        algorithm="kmeans",
+        criterion="silhouette",
+    )
+
+    optimal_k = sweep_result.optimal_k
+
+    # Task 4: Fit the K-Means model using the optimal number of clusters
+    cluster_result = engine.fit(
+        zdf,
+        algorithm="kmeans",
+        n_clusters=optimal_k,
+    )
+
+    # Task 5: Return the required output dictionary
+    return {
+        "labels": list(cluster_result.labels),
+        "n_clusters": int(optimal_k),
+        "silhouette": float(cluster_result.silhouette_score),
+    }
 
 
 if __name__ == "__main__":

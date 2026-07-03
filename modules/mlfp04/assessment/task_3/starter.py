@@ -61,27 +61,26 @@ def load_documents() -> pl.DataFrame:
 
 
 def build_tfidf(docs: list[str], *, min_df: int = 5, max_df_frac: float = 0.15):
-    """Deterministic TF-IDF: sublinear TF, df-pruned vocab, L2-normalised rows.
-
-    PROVIDED — use as given. Returns (matrix [n_docs x n_vocab], vocab list).
-    """
+    """Deterministic TF-IDF: sublinear TF, df-pruned vocab, L2-normalised rows."""
     tokens = [
         [t for t in re.findall(r"[a-z]{3,}", d.lower()) if t not in STOPWORDS]
         for d in docs
     ]
     n = len(tokens)
-    dfreq: Counter[str] = Counter()
+    dfreq = Counter()
     for ts in tokens:
         for w in set(ts):
             dfreq[w] += 1
     vocab = sorted(w for w, cnt in dfreq.items() if min_df <= cnt <= max_df_frac * n)
     vidx = {w: i for i, w in enumerate(vocab)}
     idf = np.array([np.log((1 + n) / (1 + dfreq[w])) + 1 for w in vocab])
+
     M = np.zeros((n, len(vocab)))
     for i, ts in enumerate(tokens):
         for w, cnt in Counter(ts).items():
             if w in vidx:
-                M[i, vidx[w]] = 1 + np.log(cnt)  # sublinear TF
+                M[i, vidx[w]] = 1 + np.log(cnt)
+
     M = M * idf
     norms = np.linalg.norm(M, axis=1, keepdims=True)
     norms[norms == 0] = 1.0
@@ -100,24 +99,43 @@ def _purity(true: np.ndarray, pred: np.ndarray) -> float:
 
 def solve() -> dict:
     """Discover four topics via TF-IDF + NMF — kailash-ml DimReductionEngine."""
+
+    # Task 1: Load the documents and build the TF-IDF matrix
     frame = load_documents()
     M, _vocab = build_tfidf(frame["text"].to_list())
 
-    # TODO 1: Wrap the TF-IDF matrix M in a Polars DataFrame
-    #         (pl.from_numpy(M, schema=[f"t{i}" for i in range(M.shape[1])])).
-    # TODO 2: DimReductionEngine().reduce(matrix_df, algorithm="nmf",
-    #         n_components=N_TOPICS, seed=42); read the `transformed` field
-    #         (the documents x 4 topic-weight matrix).
-    # TODO 3: doc_topics = argmax over the 4 topic weights per document.
-    # TODO 4: Compute topic_purity vs the true domains for self-reporting
-    #         (helper _purity is provided; true ids come from frame["category"]).
-    # TODO 5: Return {"doc_topics": [...], "n_topics": N_TOPICS,
-    #         "topic_purity": float}.
+    # Task 2: Wrap the TF-IDF matrix in a Polars DataFrame and perform NMF
+    matrix_df = pl.from_numpy(
+        M,
+        schema=[f"t{i}" for i in range(M.shape[1])]
+    )
 
+    engine = DimReductionEngine()
+
+    result = engine.reduce(
+        matrix_df,
+        algorithm="nmf",
+        n_components=N_TOPICS,
+        seed=42,
+    )
+
+    # Task 3: Assign each document to the topic with the highest weight
+    transformed = np.array(result.transformed)
+    doc_topics = np.argmax(transformed, axis=1).tolist()
+
+    # Task 4: Compute the topic purity
+    categories = frame["category"].to_list()
+    unique_categories = sorted(set(categories))
+    category_map = {c: i for i, c in enumerate(unique_categories)}
+    true_labels = np.array([category_map[c] for c in categories])
+
+    topic_purity = _purity(true_labels, np.array(doc_topics))
+
+    # Task 5: Return the required output
     return {
-        "doc_topics": [0] * frame.height,
-        "n_topics": 1,
-        "topic_purity": 0.0,
+        "doc_topics": doc_topics,
+        "n_topics": N_TOPICS,
+        "topic_purity": float(topic_purity),
     }
 
 

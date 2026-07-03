@@ -44,25 +44,52 @@ def make_sensor_matrix() -> pl.DataFrame:
 
 def solve() -> dict:
     """Compress with PCA and flag off-manifold rows — kailash-ml engines."""
+
+    # Task 1: Generate the deterministic sensor dataset
     df = make_sensor_matrix()
 
-    # TODO 1: DimReductionEngine().reduce(df, algorithm="pca", n_components=df.width);
-    #         read explained_variance_ratio, take the cumulative sum, and find the
-    #         smallest count of components reaching >= 0.90. Call it n_components_90.
-    # TODO 2: reduce(df, algorithm="pca", n_components=n_components_90); read
-    #         reconstruction_error off the DimReductionResult.
-    # TODO 3: AnomalyDetectionEngine().detect(df, algorithm="isolation_forest",
-    #         contamination=CONTAMINATION); read scores and labels.
-    # TODO 4: Build anomaly_labels (1 = anomaly, 0 = normal). The engine flags
-    #         anomalies with label == -1.
-    # TODO 5: Return the dict described in problem.md (5 keys).
+    # Task 2: Find the minimum number of PCA components that explain at least 90% variance
+    dim_engine = DimReductionEngine()
 
+    full_result = dim_engine.reduce(
+        df,
+        algorithm="pca",
+        n_components=df.width,
+    )
+
+    explained = np.array(full_result.explained_variance_ratio)
+    cumulative = np.cumsum(explained)
+    n_components_90 = int(np.argmax(cumulative >= 0.90) + 1)
+
+    # Task 3: Compress the dataset using the selected number of components
+    reduced_result = dim_engine.reduce(
+        df,
+        algorithm="pca",
+        n_components=n_components_90,
+    )
+
+    reconstruction_error = float(reduced_result.reconstruction_error)
+
+    # Task 4: Detect anomalies using Isolation Forest
+    anomaly_engine = AnomalyDetectionEngine()
+
+    anomaly_result = anomaly_engine.detect(
+        df,
+        algorithm="isolation_forest",
+        contamination=CONTAMINATION,
+    )
+
+    anomaly_scores = list(anomaly_result.scores)
+    anomaly_labels = [1 if label == -1 else 0 for label in anomaly_result.labels]
+    n_anomalies = int(anomaly_result.n_anomalies)
+
+    # Task 5: Return the required output
     return {
-        "n_components_90": df.width,
-        "reconstruction_error": 0.0,
-        "anomaly_scores": [0.0] * df.height,
-        "anomaly_labels": [0] * df.height,
-        "n_anomalies": 0,
+        "n_components_90": n_components_90,
+        "reconstruction_error": reconstruction_error,
+        "anomaly_scores": anomaly_scores,
+        "anomaly_labels": anomaly_labels,
+        "n_anomalies": n_anomalies,
     }
 
 
