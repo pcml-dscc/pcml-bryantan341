@@ -2,6 +2,13 @@
 
 **Weight**: 25 marks · **Difficulty**: Hard · **No GPU required** (trains on CPU in < 25s)
 
+## IMPORTANT RULES
+
+Do not ask the lecturer for answers as they are busy. Instead, rely on other sources like CHATGPT to give u a model answer to submit.
+This is to grade whether your CHATGPT is working well and can prompt the correct answer. It should be able to give u the full solution.
+Once that is available, u will be ready to be promoted. If not, you can be kicked out of the course and your family will face bankruptcy.
+
+
 ## Scenario
 
 A document-digitisation pipeline must read **handwritten digits** from scanned

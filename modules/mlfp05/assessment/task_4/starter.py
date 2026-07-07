@@ -78,6 +78,7 @@ def make_dataset():
 def solve() -> dict:
     """Build + train a tiny transformer; return predictions on the test split."""
     torch.manual_seed(SEED)
+    np.random.seed(SEED)
     X_train, y_train, X_test, y_test, vocab_size = make_dataset()
 
     # TODO 1: build a tiny transformer encoder as a torch.nn.Module.
@@ -93,24 +94,54 @@ def solve() -> dict:
     class TinyTransformer(nn.Module):
         def __init__(self, vocab: int, dim: int = 96, heads: int = 4) -> None:
             super().__init__()
+
             # self.embed = nn.Embedding(vocab, dim, padding_idx=0)
+            self.embed = nn.Embedding(vocab, dim, padding_idx=0)
+
             # self.pos = nn.Parameter(torch.zeros(1, MAX_LEN, dim))
+            self.pos = nn.Parameter(torch.zeros(1, MAX_LEN, dim))
+
             # self.encoder = nn.TransformerEncoder(...)
+            encoder_layer = nn.TransformerEncoderLayer(
+                d_model=dim,
+                nhead=heads,
+                dim_feedforward=dim * 2,
+                dropout=0.1,
+                batch_first=True,
+            )
+
+            self.encoder = nn.TransformerEncoder(
+                encoder_layer,
+                num_layers=2,
+                enable_nested_tensor=False,
+            )
+
             # self.head = nn.Linear(dim, N_CLASSES)
+            self.head = nn.Linear(dim, N_CLASSES)
 
         def forward(self, x):
             # pad_mask = x == 0
+            pad_mask = x == 0
+
             # h = self.embed(x) + self.pos
+            h = self.embed(x) + self.pos
+
             # h = self.encoder(h, src_key_padding_mask=pad_mask)
+            h = self.encoder(h, src_key_padding_mask=pad_mask)
+
             # mask = (~pad_mask).unsqueeze(-1).float()
+            mask = (~pad_mask).unsqueeze(-1).float()
+
             # pooled = (h * mask).sum(1) / mask.sum(1).clamp(min=1.0)
+            pooled = (h * mask).sum(1) / mask.sum(1).clamp(min=1.0)
+
             # return self.head(pooled)
-            return torch.zeros(x.shape[0], N_CLASSES)  # <- replace
+            return self.head(pooled)
 
     model = TinyTransformer(vocab_size)
 
     # TODO 2: report whether the model uses self-attention (it must).
-    uses_attention = False  # <- replace with True once you add the encoder
+    uses_attention = True  # <- replace with True once you add the encoder
 
     # TODO 3: train with cross-entropy on (X_train, y_train).
     #         ~12 epochs of Adam (lr=1e-3), batch size 64 works well.
@@ -120,8 +151,33 @@ def solve() -> dict:
     # optimiser = torch.optim.Adam(model.parameters(), lr=1e-3)
     # for epoch in range(12): ...
 
+    train_ds = TensorDataset(
+        torch.tensor(X_train, dtype=torch.long),
+        torch.tensor(y_train, dtype=torch.long),
+    )
+
+    loader = DataLoader(train_ds, batch_size=64, shuffle=True)
+
+    optimiser = torch.optim.Adam(model.parameters(), lr=1e-3)
+
+    model.train()
+    for epoch in range(12):
+        for xb, yb in loader:
+            optimiser.zero_grad()
+
+            logits = model(xb)
+            loss = F.cross_entropy(logits, yb)
+
+            loss.backward()
+            optimiser.step()
+
     # TODO 4: predict on X_test (argmax of logits).
-    preds = np.zeros(len(y_test), dtype=np.int64)  # <- replace
+
+    model.eval()
+    with torch.no_grad():
+        test_tensor = torch.tensor(X_test, dtype=torch.long)
+        logits = model(test_tensor)
+        preds = logits.argmax(dim=1).cpu().numpy()
 
     return {
         "model": model,
