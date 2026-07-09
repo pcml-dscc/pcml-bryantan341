@@ -20,18 +20,13 @@ from kailash_ml import SklearnTrainable
 
 SEED = 20260404
 N = 800
-SPLIT = 600  # first 600 rows train, last 200 test
+SPLIT = 600
 FEATURES = ["x1", "x2"]
 TARGET = "label"
 
 
 def make_circles() -> pl.DataFrame:
-    """Two concentric rings — class 0 inside, class 1 outside.
-
-    The classes share a centre, so NO straight line separates them. Do NOT
-    change the seed or sizes — the grader regenerates this exact dataset and
-    the same train/test split.
-    """
+    """Two concentric rings — class 0 inside, class 1 outside."""
     rng = np.random.default_rng(SEED)
     m = N // 2
 
@@ -44,32 +39,68 @@ def make_circles() -> pl.DataFrame:
     y = np.r_[np.zeros(m, dtype=int), np.ones(m, dtype=int)]
     perm = rng.permutation(N)
     X, y = X[perm], y[perm]
-    return pl.DataFrame({"x1": X[:, 0], "x2": X[:, 1], "label": y})
+
+    return pl.DataFrame(
+        {
+            "x1": X[:, 0],
+            "x2": X[:, 1],
+            "label": y,
+        }
+    )
 
 
 def solve() -> dict:
     """Train an MLP through kailash-ml and beat the linear ceiling on circles."""
+
+    # Task 1: Generate the concentric circles dataset and split into train/test
     df = make_circles()
     train_df = df.head(SPLIT)
     test_df = df.tail(N - SPLIT)
 
-    # TODO 1: Build a SklearnTrainable wrapping an MLPClassifier with at least
-    #         one hidden layer, e.g.
-    #         estimator=MLPClassifier(hidden_layer_sizes=(32, 16),
-    #             activation="relu", max_iter=2000, random_state=SEED),
-    #         target=TARGET, metric="accuracy".
-    # TODO 2: fit on train_df.
-    # TODO 3: predict on test_df.select(FEATURES) and on train_df.select(FEATURES).
-    #         The kailash-ml prediction object exposes .to_polars() and .column —
-    #         pull the predicted-label column out as a numpy int array.
-    # TODO 4: Compute test_accuracy and train_accuracy against the true labels.
-    # TODO 5: Return {"test_predictions": [...] (length 200), "test_accuracy":
-    #         float, "train_accuracy": float}.
+    # Task 2: Build the MLP wrapped in SklearnTrainable and fit the model
+    model = SklearnTrainable(
+        estimator=MLPClassifier(
+            hidden_layer_sizes=(32, 16),
+            activation="relu",
+            max_iter=2000,
+            random_state=SEED,
+        ),
+        target=TARGET,
+        metric="accuracy",
+    )
 
+    model.fit(train_df)
+
+    # Task 3: Predict on the training and testing datasets
+    test_pred = model.predict(test_df.select(FEATURES))
+    train_pred = model.predict(train_df.select(FEATURES))
+
+    test_predictions = (
+        test_pred.to_polars()
+        .get_column(test_pred.column)
+        .to_numpy()
+        .astype(int)
+    )
+
+    train_predictions = (
+        train_pred.to_polars()
+        .get_column(train_pred.column)
+        .to_numpy()
+        .astype(int)
+    )
+
+    # Task 4: Compute the train and test accuracies
+    test_labels = test_df.get_column(TARGET).to_numpy()
+    train_labels = train_df.get_column(TARGET).to_numpy()
+
+    test_accuracy = float(np.mean(test_predictions == test_labels))
+    train_accuracy = float(np.mean(train_predictions == train_labels))
+
+    # Task 5: Return the required output
     return {
-        "test_predictions": [0] * (N - SPLIT),
-        "test_accuracy": 0.0,
-        "train_accuracy": 0.0,
+        "test_predictions": test_predictions.tolist(),
+        "test_accuracy": test_accuracy,
+        "train_accuracy": train_accuracy,
     }
 
 

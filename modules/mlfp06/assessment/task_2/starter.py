@@ -81,16 +81,21 @@ def build_corpus_and_questions() -> tuple[list[str], list[str]]:
     seen: dict[str, int] = {}
     corpus: list[str] = []
     questions: list[str] = []
+
     for row in answerable.iter_rows(named=True):
         ctx = row["text"]
+
         if ctx not in seen:
             seen[ctx] = len(corpus)
             corpus.append(ctx)
+
         if len(questions) < N_QUERIES and row["question"]:
             if 1 <= len(_content_tokens(row["answer"])) <= 3:
                 questions.append(row["question"])
+
         if len(corpus) >= N_CORPUS and len(questions) >= N_QUERIES:
             break
+
     return corpus, questions
 
 
@@ -106,19 +111,57 @@ async def _run() -> dict:
 
     embedder = make_embedder(model="nomic-embed-text")
 
-    # TODO 1: Embed the corpus and the questions with embedder.embed(list_of_text).
-    #         (embed is async — await it.)
-
-    # TODO 2: For each question, rank corpus docs by _cosine() and take the
-    #         top-3 indices (highest similarity first).
-
-    # TODO 3: For each question, build a context from its top-3 docs and
-    #         generate a grounded answer via make_delegate(temperature=0.0) +
-    #         run_delegate_text. Instruct the model to answer ONLY from context.
+    # =========================
+    # Task 1: Embed corpus/questions
+    # =========================
+    corpus_embeddings = await embedder.embed(corpus)
+    question_embeddings = await embedder.embed(questions)
 
     retrieved: list[list[int]] = []
     answers: list[str] = []
-    return {"retrieved": retrieved, "answers": answers}
+
+    delegate = make_delegate(temperature=0.0)
+
+    # =========================
+    # Task 2 & 3
+    # =========================
+    for q_embed, question in zip(question_embeddings, questions):
+
+        similarities = []
+
+        for idx, doc_embed in enumerate(corpus_embeddings):
+            score = _cosine(q_embed, doc_embed)
+            similarities.append((score, idx))
+
+        similarities.sort(reverse=True)
+
+        top3 = [idx for _, idx in similarities[:TOP_K]]
+        retrieved.append(top3)
+
+        context = "\n\n".join(corpus[i] for i in top3)
+
+        prompt = f"""
+Answer the question using ONLY the information in the context.
+
+If the answer is not present in the context, reply with "I don't know."
+
+Context:
+{context}
+
+Question:
+{question}
+
+Answer:
+"""
+
+        answer = await run_delegate_text(delegate, prompt)
+
+        answers.append(str(answer).strip())
+
+    return {
+        "retrieved": retrieved,
+        "answers": answers,
+    }
 
 
 def solve() -> dict:
@@ -128,5 +171,6 @@ def solve() -> dict:
 
 if __name__ == "__main__":
     out = solve()
+
     for i, (r, a) in enumerate(zip(out["retrieved"], out["answers"])):
         print(f"Q{i}: top3={r}  answer={a[:70]!r}")

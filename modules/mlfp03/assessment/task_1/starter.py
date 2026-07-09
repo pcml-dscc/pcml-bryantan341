@@ -9,7 +9,7 @@ pool, and the leakage-free selection contract. Your submission is auto-graded
 against an independent reference — every wrong formula, leaked column, or
 mis-ranked feature fails a check.
 
-    python grader.py starter.py     # grade your attempt
+    python grader.py starter.py
 """
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ BASE_FEATURES = [
     "num_returns",
     "loyalty_int",
 ]
+
 ENGINEERED_FEATURES = [
     "revenue_per_order",
     "returns_per_order",
@@ -50,13 +51,18 @@ ENGINEERED_FEATURES = [
 
 
 def _load_base() -> pl.DataFrame:
-    """Load the first N_ROWS (sorted by customer_id) and derive the target.
+    """Load the first N_ROWS and derive the target."""
 
-    The derived target ``premium_response`` is given to you in full — keep it
-    EXACTLY as written so your output matches the grader's reference.
-    """
-    df = MLFPDataLoader().load("mlfp03", "ecommerce_customers.parquet")
-    df = df.sort("customer_id").head(N_ROWS)
+    df = MLFPDataLoader().load(
+        "mlfp03",
+        "ecommerce_customers.parquet",
+    )
+
+    df = (
+        df
+        .sort("customer_id")
+        .head(N_ROWS)
+    )
 
     rng = np.random.default_rng(SEED)
 
@@ -64,8 +70,20 @@ def _load_base() -> pl.DataFrame:
         a = df[col].to_numpy().astype(float)
         return (a - a.mean()) / (a.std() + 1e-9)
 
-    loyal = df["loyalty_member"].cast(pl.Int64).to_numpy().astype(float)
-    sat_high = (df["satisfaction_score"] >= 4).cast(pl.Int64).to_numpy().astype(float)
+    loyal = (
+        df["loyalty_member"]
+        .cast(pl.Int64)
+        .to_numpy()
+        .astype(float)
+    )
+
+    sat_high = (
+        (df["satisfaction_score"] >= 4)
+        .cast(pl.Int64)
+        .to_numpy()
+        .astype(float)
+    )
+
     logit = (
         1.0 * z("satisfaction_score")
         + 0.9 * loyal
@@ -75,54 +93,209 @@ def _load_base() -> pl.DataFrame:
         + 1.4 * (loyal * sat_high)
         + rng.normal(0.0, 1.3, size=df.height)
     )
-    target = (logit > 2.0).astype(np.int64)
+
+    target = (
+        logit > 2.0
+    ).astype(np.int64)
 
     return df.with_columns(
         [
-            pl.col("loyalty_member").cast(pl.Int64).alias("loyalty_int"),
-            pl.Series(TARGET, target),
+            pl.col("loyalty_member")
+            .cast(pl.Int64)
+            .alias("loyalty_int"),
+
+            pl.Series(
+                TARGET,
+                target,
+            ),
         ]
     )
 
 
 def solve() -> dict:
-    """Engineer features then rank them leakage-free with FeatureEngineer.
+    """Engineer and select the best features using train rows only."""
 
-    Return a dict with keys: feature_matrix (pl.DataFrame of the 14 candidate
-    columns + target), engineered_columns (list of 6), selected_features
-    (top-8 by importance), target_column. See problem.md for exact formulas.
-    """
+    from kailash_ml.engines.feature_engineer import (
+        FeatureEngineer,
+        GeneratedColumn,
+        GeneratedFeatures,
+    )
+
     df = _load_base()
 
-    # TODO 1: Engineer the six features with the EXACT formulas in problem.md:
-    #         revenue_per_order, returns_per_order, is_satisfied,
-    #         loyal_and_satisfied, tenure_years, spend_per_tenure_day.
-    #         Hint: df.with_columns([... .alias("revenue_per_order"), ...])
+    # ============================================================
+    # TASK 1:
+    # Engineer the six required features using the exact formulas.
+    # ============================================================
+    df = df.with_columns(
+        [
+            (
+                pl.col("total_revenue")
+                / pl.col("order_count")
+            ).alias("revenue_per_order"),
 
-    # TODO 2: Build feature_matrix = the 14 candidate columns
-    #         (BASE_FEATURES + ENGINEERED_FEATURES) plus the TARGET column.
-    #         Do NOT include customer_id, review_text, ltv_tier, or churned.
+            (
+                pl.col("num_returns")
+                / pl.col("order_count")
+            ).alias("returns_per_order"),
 
-    # TODO 3: Take the TRAIN split only (first TRAIN_FRACTION of the rows) so
-    #         no test-set signal leaks into selection.
+            (
+                pl.col("satisfaction_score") >= 4
+            )
+            .cast(pl.Int64)
+            .alias("is_satisfied"),
 
-    # TODO 4: Rank features with kailash-ml FeatureEngineer. Build a
-    #         GeneratedFeatures candidate set (original_columns=BASE_FEATURES,
-    #         generated_columns=[GeneratedColumn(...) for each engineered
-    #         feature]) then call FeatureEngineer(...).select(train, gen,
-    #         target=TARGET, method="importance", top_k=TOP_K).
-    #         Hint: from kailash_ml.engines.feature_engineer import (
-    #                   FeatureEngineer, GeneratedColumn, GeneratedFeatures)
+            (
+                pl.col("loyalty_int")
+                * (
+                    pl.col("satisfaction_score") >= 4
+                ).cast(pl.Int64)
+            ).alias("loyal_and_satisfied"),
 
-    # TODO 5: Return the required dict.
+            (
+                pl.col("customer_tenure_days")
+                / 365.0
+            ).alias("tenure_years"),
+
+            (
+                pl.col("total_revenue")
+                / pl.col("customer_tenure_days")
+            ).alias("spend_per_tenure_day"),
+        ]
+    )
+
+    # ============================================================
+    # TASK 2:
+    # Build the feature matrix using only the 14 candidates
+    # and the premium_response target.
+    #
+    # Excludes customer_id, text, categories, tiers and churned.
+    # ============================================================
+    candidate_columns = (
+        BASE_FEATURES
+        + ENGINEERED_FEATURES
+    )
+
+    feature_matrix = df.select(
+        candidate_columns + [TARGET]
+    )
+
+    # ============================================================
+    # TASK 3:
+    # Take only the first 75% of rows for feature selection.
+    # The test portion must not affect the feature ranking.
+    # ============================================================
+    train_rows = int(
+        feature_matrix.height
+        * TRAIN_FRACTION
+    )
+
+    train = feature_matrix.head(
+        train_rows
+    )
+
+    # ============================================================
+    # TASK 4:
+    # Describe the six manually generated features using
+    # GeneratedColumn and GeneratedFeatures.
+    # ============================================================
+    generated_columns = [
+        GeneratedColumn(
+            name="revenue_per_order",
+            source_columns=[
+                "total_revenue",
+                "order_count",
+            ],
+            strategy="ratio",
+            dtype="float64",
+        ),
+        GeneratedColumn(
+            name="returns_per_order",
+            source_columns=[
+                "num_returns",
+                "order_count",
+            ],
+            strategy="ratio",
+            dtype="float64",
+        ),
+        GeneratedColumn(
+            name="is_satisfied",
+            source_columns=[
+                "satisfaction_score",
+            ],
+            strategy="threshold",
+            dtype="int64",
+        ),
+        GeneratedColumn(
+            name="loyal_and_satisfied",
+            source_columns=[
+                "loyalty_int",
+                "satisfaction_score",
+            ],
+            strategy="interaction",
+            dtype="int64",
+        ),
+        GeneratedColumn(
+            name="tenure_years",
+            source_columns=[
+                "customer_tenure_days",
+            ],
+            strategy="scaling",
+            dtype="float64",
+        ),
+        GeneratedColumn(
+            name="spend_per_tenure_day",
+            source_columns=[
+                "total_revenue",
+                "customer_tenure_days",
+            ],
+            strategy="ratio",
+            dtype="float64",
+        ),
+    ]
+
+    candidates = GeneratedFeatures(
+        original_columns=BASE_FEATURES,
+        generated_columns=generated_columns,
+        total_candidates=len(candidate_columns),
+        data=feature_matrix,
+    )
+
+    # ============================================================
+    # TASK 5:
+    # Rank candidates by importance using only the train split.
+    # Keep the top 8 selected feature names.
+    # ============================================================
+    feature_engineer = FeatureEngineer(
+        max_features=TOP_K
+    )
+
+    selection = feature_engineer.select(
+        train,
+        candidates,
+        target=TARGET,
+        method="importance",
+        top_k=TOP_K,
+    )
+
+    selected_features = (
+        selection.selected_columns
+    )
+
+    # ============================================================
+    # TASK 6:
+    # Return the required dictionary.
+    # ============================================================
     return {
-        "feature_matrix": df,  # <- replace with the 14-column candidate matrix
-        "engineered_columns": [],
-        "selected_features": [],
+        "feature_matrix": feature_matrix,
+        "engineered_columns": ENGINEERED_FEATURES.copy(),
+        "selected_features": selected_features,
         "target_column": TARGET,
     }
 
 
 if __name__ == "__main__":
     out = solve()
+
     print(out["selected_features"])
+    print(out["feature_matrix"].shape)
