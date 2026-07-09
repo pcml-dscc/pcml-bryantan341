@@ -69,9 +69,29 @@ INCIDENT_REPORTS: list[str] = [
 class IncidentExtraction(Signature):
     """Extract structured fields from a last-mile logistics incident report."""
 
-    # report_text: str = InputField(description=...)
-    # incident_id: str = OutputField(description=...)
-    # ... (add the remaining four OutputFields)
+    report_text: str = InputField(
+        description="The full logistics incident report to extract structured information from."
+    )
+
+    incident_id: str = OutputField(
+        description="The incident reference ID exactly as written, e.g. INC-3001."
+    )
+
+    severity: str = OutputField(
+        description="The severity level. Return exactly one of: low, medium, or high."
+    )
+
+    location: str = OutputField(
+        description="The facility or location where the incident occurred."
+    )
+
+    parcels_affected: int = OutputField(
+        description="The integer number of parcels affected by the incident."
+    )
+
+    claim_required: bool = OutputField(
+        description="Return True if the report states an insurance claim is required, otherwise False."
+    )
 
 
 def _make_agent() -> BaseAgent:
@@ -79,15 +99,45 @@ def _make_agent() -> BaseAgent:
     #         to Ollama: config={"model": DEFAULT_CHAT_MODEL,
     #         "llm_provider": "ollama", "base_url": OLLAMA_BASE_URL,
     #         "use_async_llm": True, "temperature": 0.0}.
-    raise NotImplementedError("Build and return the BaseAgent")
+
+    class IncidentAgent(BaseAgent):
+        signature = IncidentExtraction()
+
+        def __init__(self):
+            super().__init__(
+                config={
+                    "model": DEFAULT_CHAT_MODEL,
+                    "llm_provider": "ollama",
+                    "base_url": OLLAMA_BASE_URL,
+                    "use_async_llm": True,
+                    "temperature": 0.0,
+                }
+            )
+
+    return IncidentAgent()
 
 
 async def _extract_all() -> list[dict]:
     results: list[dict] = []
+
+    agent = _make_agent()
+
     for report in INCIDENT_REPORTS:
         # TODO 3: Run the agent on each report with `await agent.run_async(
         #         report_text=report)` and collect the five fields into a dict.
-        pass
+
+        response = await agent.run_async(report_text=report)
+
+        results.append(
+    {
+        "incident_id": response["incident_id"],
+        "severity": response["severity"],
+        "location": response["location"],
+        "parcels_affected": response["parcels_affected"],
+        "claim_required": response["claim_required"],
+    }
+)
+
     return results
 
 

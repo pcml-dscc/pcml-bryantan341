@@ -65,6 +65,7 @@ def _make_tools(df: pl.DataFrame, call_log: list[tuple[str, dict]]) -> ToolRegis
         return f"Index {index} is out of range."
 
     reg = ToolRegistry()
+
     # TODO 1: register all four tools. Each call looks like:
     #   reg.register(name="dataset_size",
     #                description="...what the LLM reads to choose this tool...",
@@ -72,6 +73,59 @@ def _make_tools(df: pl.DataFrame, call_log: list[tuple[str, dict]]) -> ToolRegis
     #                executor=dataset_size)
     # count_by_label needs a 'label' string param; get_review_by_index needs an
     # 'index' integer param. The no-arg tools take properties={} .
+
+    reg.register(
+        name="dataset_size",
+        description="Returns the total number of reviews in the dataset.",
+        parameters={
+            "type": "object",
+            "properties": {},
+        },
+        executor=dataset_size,
+    )
+
+    reg.register(
+        name="count_by_label",
+        description="Returns the number of reviews with a specified sentiment label.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "label": {
+                    "type": "string",
+                    "description": "Sentiment label: positive or negative.",
+                }
+            },
+            "required": ["label"],
+        },
+        executor=count_by_label,
+    )
+
+    reg.register(
+        name="average_review_length",
+        description="Returns the average review length in characters.",
+        parameters={
+            "type": "object",
+            "properties": {},
+        },
+        executor=average_review_length,
+    )
+
+    reg.register(
+        name="get_review_by_index",
+        description="Returns the review and sentiment label at a specified dataset index.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "index": {
+                    "type": "integer",
+                    "description": "The zero-based index of the review.",
+                }
+            },
+            "required": ["index"],
+        },
+        executor=get_review_by_index,
+    )
+
     return reg
 
 
@@ -79,19 +133,43 @@ async def _run() -> dict:
     df = MLFPDataLoader().load("mlfp06", "sst2/sst2_200.parquet")
     transcripts: list[dict] = []
     tool_names: list[str] = []
+
     for question in QUESTIONS:
         call_log: list[tuple[str, dict]] = []
+
         reg = _make_tools(df, call_log)
         tool_names = reg.tool_names
+
         # TODO 2: build a Delegate with make_delegate(model="llama3.2:3b",
         #         temperature=0.0, max_tokens=512, tools=reg) and run it on the
         #         question. Iterate over delegate.run(question); capture the
         #         turn_complete event's text as the final answer.
 
+        delegate = make_delegate(
+            model="llama3.2:3b",
+            temperature=0.0,
+            max_tokens=512,
+            tools=reg,
+        )
+
+        final_text = ""
+
+        async for event in delegate.run(question):
+            if getattr(event, "type", "") == "turn_complete":
+                final_text = event.text
+
         # TODO 3: append {"question": question,
         #                 "tools_called": [[name, args], ...] from call_log,
         #                 "answer": final_text} to transcripts.
-        pass
+
+        transcripts.append(
+            {
+                "question": question,
+                "tools_called": [[name, args] for name, args in call_log],
+                "answer": final_text,
+            }
+        )
+
     return {"tool_names": tool_names, "transcripts": transcripts}
 
 
